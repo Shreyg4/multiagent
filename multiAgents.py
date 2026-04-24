@@ -66,61 +66,76 @@ class ReflexAgent(Agent):
         Print out these variables to see what you're getting, then combine them
         to create a masterful evaluation function.
         """
-        # Useful information you can extract from a GameState (pacman.py)
+        # Build the successor resulting from taking the candidate action.
+        # The reflex agent evaluates each legal action independently and then
+        # picks the action with the highest returned score.
         successorGameState = currentGameState.generatePacmanSuccessor(action)
         newPos = successorGameState.getPacmanPosition()
         newFood = successorGameState.getFood()
         newGhostStates = successorGameState.getGhostStates()
         newScaredTimes = [ghostState.scaredTimer for ghostState in newGhostStates]
 
-        # Never choose immediate losing states when alternatives exist.
+        # Hard-fail immediate losing states so they are never selected unless
+        # all legal actions lose.
         if successorGameState.isLose():
             return float('-inf')
 
-        # Base score captures food, capsule, win/lose and time-penalty effects.
+        # Start from the environment score, then add shaping terms that bias
+        # toward short-term tactical improvements.
         score = successorGameState.getScore()
 
         foodList = newFood.asList()
         currentFood = currentGameState.getFood()
 
-        # Reward immediate food consumption.
+        # Give a one-step bonus when this move lands on food that existed in
+        # the current state.
         if currentFood[int(newPos[0])][int(newPos[1])]:
             score += 8
 
-        # Use reciprocal distance so nearer food gets much stronger preference.
+        # Encourage moving toward the closest food pellet. The reciprocal form
+        # grows sharply as distance approaches zero, prioritizing nearby food.
         if foodList:
             minFoodDistance = min(manhattanDistance(newPos, foodPos) for foodPos in foodList)
             score += 6.0 / (minFoodDistance + 1.0)
 
-        # Prefer states with fewer remaining pellets.
+        # Add global pressure to finish the board by penalizing remaining food.
         score -= 3.0 * len(foodList)
 
-        # Capsules are valuable, especially with nearby active ghosts.
+        # Capsules are strategic resources. This term makes Pacman drift toward
+        # reachable capsules even before immediate danger appears.
         capsules = successorGameState.getCapsules()
         if capsules:
             minCapsuleDistance = min(manhattanDistance(newPos, capPos) for capPos in capsules)
             score += 2.0 / (minCapsuleDistance + 1.0)
 
+        # Track active and scared ghosts separately:
+        # - scared ghosts are opportunities (positive reward)
+        # - active ghosts are threats (distance-based penalty)
         minActiveGhostDistance = float('inf')
         for ghostState, scaredTime in zip(newGhostStates, newScaredTimes):
             ghostPos = ghostState.getPosition()
             distanceToGhost = manhattanDistance(newPos, ghostPos)
 
             if scaredTime > 0:
-                # Chase scared ghosts while edible.
+                # While scared, ghosts are edible, so getting closer is good.
                 score += 10.0 / (distanceToGhost + 1.0)
             else:
                 minActiveGhostDistance = min(minActiveGhostDistance, distanceToGhost)
                 if distanceToGhost <= 1:
+                    # Adjacent active ghosts are almost always catastrophic;
+                    # apply a very strong penalty to avoid those moves.
                     score -= 1000
                 else:
+                    # Softer risk shaping for non-adjacent active ghosts.
                     score -= 8.0 / distanceToGhost
 
-        # Extra caution when an active ghost is close.
+        # Apply an extra risk term for the nearest active ghost, giving stronger
+        # caution when a threat is within a few tiles.
         if minActiveGhostDistance < 3:
             score -= 10.0 / (minActiveGhostDistance + 0.1)
 
-        # Discourage wasting turns.
+        # Standing still is usually suboptimal because of the built-in time
+        # penalty and increased ghost exposure.
         if action == Directions.STOP:
             score -= 15
 
@@ -184,10 +199,14 @@ class MinimaxAgent(MultiAgentSearchAgent):
         gameState.isLose():
         Returns whether or not the game state is a losing state
         """
+        # Agent ordering convention:
+        # - agent 0: Pacman (maximizer)
+        # - agents 1..N-1: ghosts (minimizers)
         numAgents = gameState.getNumAgents()
 
         def minimax(state, depth, agentIndex):
-            # Stop on terminal states or when desired ply depth is reached.
+            # Base case: stop recursion at win/lose states or after completing
+            # the configured number of Pacman plies.
             if state.isWin() or state.isLose() or depth == self.depth:
                 return self.evaluationFunction(state)
 
@@ -195,24 +214,29 @@ class MinimaxAgent(MultiAgentSearchAgent):
             if not legalActions:
                 return self.evaluationFunction(state)
 
+            # Rotate to the next agent; increase depth only after all agents
+            # have played and control returns to Pacman.
             nextAgent = (agentIndex + 1) % numAgents
             nextDepth = depth + 1 if nextAgent == 0 else depth
 
             if agentIndex == 0:
-                # Pacman (max node)
+                # Max node: Pacman chooses the action with highest value.
                 value = float('-inf')
                 for action in legalActions:
                     successor = state.generateSuccessor(agentIndex, action)
                     value = max(value, minimax(successor, nextDepth, nextAgent))
                 return value
 
-            # Ghosts (min nodes)
+            # Min node: each ghost is modeled as an adversary minimizing
+            # Pacman's utility.
             value = float('inf')
             for action in legalActions:
                 successor = state.generateSuccessor(agentIndex, action)
                 value = min(value, minimax(successor, nextDepth, nextAgent))
             return value
 
+        # Root decision: evaluate each Pacman action and choose among argmax.
+        # Ties are broken uniformly at random to avoid deterministic bias.
         bestValue = float('-inf')
         bestActions = []
         for action in gameState.getLegalActions(0):
@@ -235,9 +259,12 @@ class AlphaBetaAgent(MultiAgentSearchAgent):
         """
         Returns the minimax action using self.depth and self.evaluationFunction
         """
+        # Same game-tree structure as minimax, with alpha-beta bounds used to
+        # skip branches that cannot affect the final decision.
         numAgents = gameState.getNumAgents()
 
         def alphabeta(state, depth, agentIndex, alpha, beta):
+            # Terminal/depth cutoff condition.
             if state.isWin() or state.isLose() or depth == self.depth:
                 return self.evaluationFunction(state)
 
@@ -245,10 +272,12 @@ class AlphaBetaAgent(MultiAgentSearchAgent):
             if not legalActions:
                 return self.evaluationFunction(state)
 
+            # Same turn progression rule as minimax.
             nextAgent = (agentIndex + 1) % numAgents
             nextDepth = depth + 1 if nextAgent == 0 else depth
 
             if agentIndex == 0:
+                # Max node updates alpha (best guaranteed value for maximizer).
                 value = float('-inf')
                 for action in legalActions:
                     successor = state.generateSuccessor(agentIndex, action)
@@ -259,6 +288,7 @@ class AlphaBetaAgent(MultiAgentSearchAgent):
                     alpha = max(alpha, value)
                 return value
 
+            # Min node updates beta (best guaranteed value for minimizer).
             value = float('inf')
             for action in legalActions:
                 successor = state.generateSuccessor(agentIndex, action)
@@ -269,6 +299,8 @@ class AlphaBetaAgent(MultiAgentSearchAgent):
                 beta = min(beta, value)
             return value
 
+        # Root search keeps global alpha/beta bounds while selecting the best
+        # Pacman action.
         alpha = float('-inf')
         beta = float('inf')
         bestValue = float('-inf')
@@ -296,9 +328,12 @@ class ExpectimaxAgent(MultiAgentSearchAgent):
         All ghosts should be modeled as choosing uniformly at random from their
         legal moves.
         """
+        # Expectimax differs from minimax only at ghost nodes: ghosts are
+        # modeled as stochastic (uniform-random), not adversarial.
         numAgents = gameState.getNumAgents()
 
         def expectimax(state, depth, agentIndex):
+            # Standard terminal/depth cutoff condition.
             if state.isWin() or state.isLose() or depth == self.depth:
                 return self.evaluationFunction(state)
 
@@ -306,10 +341,12 @@ class ExpectimaxAgent(MultiAgentSearchAgent):
             if not legalActions:
                 return self.evaluationFunction(state)
 
+            # Agent turn transition and ply counting.
             nextAgent = (agentIndex + 1) % numAgents
             nextDepth = depth + 1 if nextAgent == 0 else depth
 
             if agentIndex == 0:
+                # Pacman still chooses the max-valued successor.
                 value = float('-inf')
                 for action in legalActions:
                     successor = state.generateSuccessor(agentIndex, action)
@@ -324,6 +361,7 @@ class ExpectimaxAgent(MultiAgentSearchAgent):
                 value += probability * expectimax(successor, nextDepth, nextAgent)
             return value
 
+        # Root action selection under expected utility; ties are randomized.
         bestValue = float('-inf')
         bestActions = []
         for action in gameState.getLegalActions(0):
@@ -349,6 +387,7 @@ def betterEvaluationFunction(currentGameState):
     - strong penalties near active ghosts
     - rewards for approaching scared ghosts
     """
+    # Terminal states dominate all heuristic terms.
     if currentGameState.isWin():
         return float('inf')
     if currentGameState.isLose():
@@ -359,21 +398,28 @@ def betterEvaluationFunction(currentGameState):
     capsuleList = currentGameState.getCapsules()
     ghostStates = currentGameState.getGhostStates()
 
+    # Baseline objective from the environment (already includes key game events).
     score = currentGameState.getScore()
 
-    # Food pressure: clear remaining pellets while favoring nearby food.
+    # Food shaping combines:
+    # - local attraction to nearest pellet (reciprocal distance)
+    # - global pressure to reduce total remaining pellets
     if foodList:
         nearestFoodDist = min(manhattanDistance(pos, foodPos) for foodPos in foodList)
         score += 12.0 / (nearestFoodDist + 1.0)
     score -= 4.0 * len(foodList)
 
-    # Capsules: encourage collecting them, especially when still available.
+    # Capsules are high-value strategic items. This encourages approaching the
+    # nearest capsule and discourages leaving many capsules uncollected.
     if capsuleList:
         nearestCapsuleDist = min(manhattanDistance(pos, capPos) for capPos in capsuleList)
         score += 4.0 / (nearestCapsuleDist + 1.0)
     score -= 15.0 * len(capsuleList)
 
-    # Ghost interaction: avoid active ghosts, chase scared ghosts.
+    # Ghost shaping:
+    # - scared ghosts contribute positive reward when close (edible target)
+    # - active ghosts impose safety penalties, with very strong local penalty
+    #   when adjacent.
     activeGhostDists = []
     for ghostState in ghostStates:
         ghostPos = ghostState.getPosition()
@@ -388,7 +434,8 @@ def betterEvaluationFunction(currentGameState):
             else:
                 score -= 6.0 / ghostDist
 
-    # Extra safety term against the closest active ghost.
+    # Additional nonlinear caution for the nearest active ghost.
+    # This reinforces survival behavior even when other rewards are attractive.
     if activeGhostDists:
         closestActive = min(activeGhostDists)
         score -= 14.0 / (closestActive + 0.2)
